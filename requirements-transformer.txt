@@ -1,0 +1,2 @@
+# Optional, only for generating embeddings; not needed to view/publish the site.
+sentence-transformers>=3.0,<6.0
