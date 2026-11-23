@@ -1,5 +1,4 @@
 # CineVetor
-Demonstração de Algoritmo de Recomendação por Similaridade do Cosseno
 
 **Cinema encontra matemática.** Um laboratório interativo em português para explicar recomendações baseadas em descrições de filmes, TF-IDF, similaridade do cosseno e ângulo entre vetores.
 

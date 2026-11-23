@@ -1,0 +1,28 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {fit,tokens,dot,norm,normalize,cosine,angle,profile,rank,contributions,validateEmbeddings} from '../dist/engine.js';
+const movies=JSON.parse(fs.readFileSync(new URL('../dist/movies.json',import.meta.url)));
+const engine=fit(movies);
+const close=(a,b)=>assert.ok(Math.abs(a-b)<1e-10,`${a} != ${b}`);
+test('217 unique film/year records, six decades, minimum 12 per theme, assets exist',()=>{
+ assert.equal(movies.length,217);assert.equal(new Set(movies.map(m=>m.id)).size,217);assert.equal(new Set(movies.map(m=>m.title+m.year)).size,217);
+ assert.equal(Math.min(...movies.map(m=>m.year)),1980);assert.equal(Math.max(...movies.map(m=>m.year)),2026);
+ const counts=new Map();for(const m of movies){counts.set(m.theme,(counts.get(m.theme)||0)+1);assert.ok(m.description.length>80);assert.ok(fs.existsSync(new URL(`../dist/assets/${m.id}.svg`,import.meta.url)));}assert.equal(counts.size,18);for(const n of counts.values())assert.ok(n>=12);
+});
+test('known vectors give exactly 0, 60, 90, 180 degrees',()=>{close(angle(cosine([1,0],[1,0])),0);close(angle(cosine([1,0],[.5,Math.sqrt(3)/2])),60);close(angle(cosine([1,0],[0,1])),90);close(angle(cosine([1,0],[-1,0])),180);});
+test('cosine is scale invariant and symmetric',()=>{close(cosine([2,3],[5,7]),cosine([20,30],[5,7]));close(cosine([2,3],[5,7]),cosine([5,7],[2,3]));});
+test('angle clamps floating-point boundary errors',()=>{assert.equal(angle(1+1e-15),0);assert.equal(angle(-1-1e-15),180);});
+test('empty and zero vectors never produce NaN',()=>{assert.deepEqual(tokens('é de uma !!!'),[]);assert.deepEqual(normalize([0,0]),[0,0]);assert.equal(cosine([0,0],[1,0]),0);assert.equal(profile(engine,[],movies),null);assert.deepEqual(rank(engine,[],movies),[]);});
+test('opposing embeddings produce no profile instead of a false direction',()=>{assert.equal(profile({vectors:[[1,0],[-1,0]]},['a','b'],[{id:'a'},{id:'b'}]),null);});
+test('manual TF-IDF fixture uses whole corpus df and smoothed natural log',()=>{const e=fit([{description:'gato gato azul'},{description:'gato verde'}]);const i=e.vocab.indexOf('gato'),j=e.vocab.indexOf('azul');assert.equal(e.df[i],2);assert.equal(e.idf[i],1);close(e.idf[j],Math.log(3/2)+1);assert.equal(e.raw[0][i],2);close(e.raw[0][j],Math.log(3/2)+1);close(norm(e.vectors[0]),1);});
+test('title, year and theme do not influence vectors',()=>{const changed=movies.map(m=>({...m,title:'X',year:1,theme:'Y'}));assert.deepEqual(fit(changed).vectors,engine.vectors);});
+test('all catalog vectors normalized and pairwise TF-IDF angles within 0–90',()=>{for(let i=0;i<movies.length;i++){close(norm(engine.vectors[i]),1);for(let j=i;j<movies.length;j++){const s=cosine(engine.vectors[i],engine.vectors[j]);assert.ok(s>=0&&s<=1);assert.ok(angle(s)>=0&&angle(s)<=90);}}});
+test('profile is normalized average and excludes all watched films',()=>{const ids=['m001','m013','m026'];const p=profile(engine,ids,movies);const expected=normalize(engine.vectors[0].map((_,j)=>(engine.vectors[0][j]+engine.vectors[12][j]+engine.vectors[25][j])/3));p.forEach((x,i)=>close(x,expected[i]));const r=rank(engine,ids,movies);assert.equal(r.length,214);assert.ok(r.every(r=>!ids.includes(r.movie.id)));});
+test('scores descend, angles ascend, ties are deterministic',()=>{const r=rank(engine,['m001'],movies);assert.ok(r.every((x,i)=>!i||x.score<=r[i-1].score));assert.ok(r.every((x,i)=>!i||x.angle>=r[i-1].angle));assert.deepEqual(r,rank(engine,['m001'],movies));});
+test('empty candidate pool is handled',()=>{assert.deepEqual(rank(engine,movies.map(m=>m.id),movies),[]);});
+test('word contributions sum to cosine',()=>{const a=profile(engine,['m001','m002'],movies),b=engine.vectors[3];const rows=contributions(a,b,engine.vocab);close(rows.reduce((s,r)=>s+r.product,0),cosine(a,b));});
+test('representative tastes retrieve at least three same-theme candidates in top 10',()=>{for(const title of ['Matrix','Top Gun: Ases Indomáveis','Interestelar','Antes do Amanhecer','Rocky III','Entre Facas e Segredos','Toy Story','Whiplash: Em Busca da Perfeição']){const m=movies.find(m=>m.title===title);const matches=rank(engine,[m.id],movies).slice(0,10).filter(r=>r.movie.theme===m.theme);assert.ok(matches.length>=3,title);}});
+const fixture=()=>({model:'test-fixture-not-a-neural-model',ids:movies.map(m=>m.id),descriptions:Object.fromEntries(movies.map(m=>[m.id,m.description])),vectors:movies.map((_,i)=>[i%2?1:-1,2])});
+test('embedding import reorders by IDs and normalizes',()=>{const data=fixture();data.ids.reverse();data.vectors.reverse();const e=validateEmbeddings(data,movies);assert.equal(e.kind,'embedding');close(norm(e.vectors[0]),1);assert.ok(e.vectors[0][0]<0);});
+test('embedding import rejects mismatched descriptions, duplicates, missing vectors, zero and non-finite values',()=>{for(const modify of [d=>d.ids[0]=d.ids[1],d=>d.descriptions[movies[0].id]='stale',d=>d.vectors.pop(),d=>d.vectors[0]=[0,0],d=>d.vectors[0]=[Infinity,1],d=>d.vectors[0]=[1,2,3]]){const data=fixture();modify(data);assert.throws(()=>validateEmbeddings(data,movies));}});
